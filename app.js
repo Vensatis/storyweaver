@@ -1,6 +1,6 @@
 /* ============================================
-   STORYWEAVER — Application Logic v2
-   Multi-provider API support + context engine
+   STORYWEAVER — Application Logic v3
+   Brainstorm panel · Context protection · Campaign summarize
    ============================================ */
 
 const App = (() => {
@@ -77,8 +77,8 @@ const App = (() => {
       format: 'openai',
       models: [
         { id: 'llama-3.3-70b',           label: 'Llama 3.3 70B — Recommended' },
-        { id: 'llama-3.1-405b',           label: 'Llama 3.1 405B — Most Capable' },
-        { id: 'mistral-31-24b',           label: 'Mistral 3.1 24B — Fast' },
+        { id: 'llama-3.1-405b',          label: 'Llama 3.1 405B — Most Capable' },
+        { id: 'mistral-31-24b',          label: 'Mistral 3.1 24B — Fast' },
         { id: 'dolphin-2.9.2-qwen2-72b', label: 'Dolphin Qwen2 72B — Uncensored' },
       ],
       contextLimits: [128000, 64000, 32000],
@@ -107,10 +107,10 @@ const App = (() => {
       baseUrl: 'https://api.groq.com/openai/v1/chat/completions',
       format: 'openai',
       models: [
-        { id: 'llama-3.3-70b-versatile',     label: 'Llama 3.3 70B — Recommended' },
-        { id: 'llama-3.1-8b-instant',         label: 'Llama 3.1 8B — Fastest (free tier friendly)' },
-        { id: 'mixtral-8x7b-32768',           label: 'Mixtral 8x7B — Good for long context' },
-        { id: 'gemma2-9b-it',                 label: 'Gemma 2 9B — Google open model' },
+        { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B — Recommended' },
+        { id: 'llama-3.1-8b-instant',    label: 'Llama 3.1 8B — Fastest (free tier friendly)' },
+        { id: 'mixtral-8x7b-32768',      label: 'Mixtral 8x7B — Long context' },
+        { id: 'gemma2-9b-it',            label: 'Gemma 2 9B — Google open model' },
       ],
       contextLimits: [128000, 32768, 8192],
       defaultModel: 'llama-3.3-70b-versatile',
@@ -131,13 +131,15 @@ const App = (() => {
 
   // ─── STATE ────────────────────────────────────────────────────────────────
 
-  const STATE_KEY = 'sw_state_v2';
+  const STATE_KEY = 'sw_state_v3';
   const KEYS_KEY  = 'sw_apikeys_v2';
+  const BS_KEY    = 'sw_brainstorm_v1';
 
   let state = {
     provider: 'anthropic',
     apiKeys: {},
     model: 'claude-sonnet-4-20250514',
+    bsModel: '',               // Brainstorm model — empty = same as story model
     customEndpoint: '',
     customModelName: '',
     contextLimit: 200000,
@@ -156,7 +158,12 @@ const App = (() => {
     editingCharId: null,
     pendingEventType: null,
     oocMode: false,
+    brainstormOpen: false,
   };
+
+  // Brainstorm has its own persistent transcript separate from story
+  let bsMessages    = [];   // API history for brainstorm session
+  let bsTranscript  = [];   // Display transcript (persisted)
 
   // ─── INIT ─────────────────────────────────────────────────────────────────
 
@@ -173,6 +180,8 @@ const App = (() => {
       if (raw) state = { ...state, ...JSON.parse(raw) };
       const keys = localStorage.getItem(KEYS_KEY);
       if (keys) state.apiKeys = { ...state.apiKeys, ...JSON.parse(keys) };
+      const bs = localStorage.getItem(BS_KEY);
+      if (bs) bsTranscript = JSON.parse(bs);
     } catch(e) { console.warn('State load error', e); }
   }
 
@@ -182,6 +191,11 @@ const App = (() => {
       localStorage.setItem(STATE_KEY, JSON.stringify(toSave));
       localStorage.setItem(KEYS_KEY, JSON.stringify(state.apiKeys));
     } catch(e) { console.warn('State save error', e); }
+  }
+
+  function saveBsTranscript() {
+    try { localStorage.setItem(BS_KEY, JSON.stringify(bsTranscript)); }
+    catch(e) { console.warn('BS save error', e); }
   }
 
   // ─── SCREENS ──────────────────────────────────────────────────────────────
@@ -196,6 +210,7 @@ const App = (() => {
     document.getElementById('setup-screen').classList.remove('active');
     document.getElementById('main-screen').classList.add('active');
     renderAll();
+    if (state.brainstormOpen) openBrainstormPanel();
   }
 
   function renderSetupProviderSelect() {
@@ -222,7 +237,6 @@ const App = (() => {
     const provId = document.getElementById('setup-provider-select').value;
     const key    = document.getElementById('setup-key-input').value.trim();
     if (!key && provId !== 'custom') { alert('Please enter your API key.'); return; }
-
     if (provId === 'custom') {
       const ep = document.getElementById('setup-custom-endpoint')?.value.trim();
       if (!ep) { alert('Please enter your endpoint URL.'); return; }
@@ -230,14 +244,12 @@ const App = (() => {
       state.customModelName = document.getElementById('setup-custom-model')?.value.trim() || 'llama3';
       state.model = state.customModelName;
     }
-
     state.provider = provId;
     if (key) state.apiKeys[provId] = key;
     const prov = PROVIDERS[provId];
     state.model        = prov.defaultModel;
     state.contextLimit = prov.defaultContext;
     if (provId === 'custom') state.model = state.customModelName;
-
     saveState();
     showMain();
   }
@@ -263,22 +275,20 @@ const App = (() => {
     const n = state.narrator, w = state.world;
     const voiceMap = { second:'second person ("you")', third:'third person ("she/he/they")', first:'first person ("I")' };
     const styleGuide = {
-      literary:'Rich, layered, evocative prose. Dwell in sensory detail and subtext.',
-      terse:   'Sharp and spare. Short sentences. Kinetic energy. No waste.',
-      pulp:    'Fast-paced, visceral, plot-driven. Keep the reader turning pages.',
-      lyrical: 'Poetic and sensory. Prioritize emotional and atmospheric resonance.',
-      grounded:'Realistic and observational. Character interiority over spectacle.'
+      literary: 'Rich, layered, evocative prose. Dwell in sensory detail and subtext.',
+      terse:    'Sharp and spare. Short sentences. Kinetic energy. No waste.',
+      pulp:     'Fast-paced, visceral, plot-driven. Keep the reader turning pages.',
+      lyrical:  'Poetic and sensory. Prioritize emotional and atmospheric resonance.',
+      grounded: 'Realistic and observational. Character interiority over spectacle.'
     };
     const riskGuide = {
-      high:  'Embrace dramatic risk. Let consequences be real. Allow NPCs to act against the player when their motivations demand it. Introduce complications, reversals, surprises. Avoid the comfortable choice when a harder truth serves the story.',
-      medium:'Balance tension with resolution. Allow meaningful conflict but ensure narrative momentum.',
-      low:   'Prefer resolution. Guide the story toward satisfying outcomes while maintaining stakes.'
+      high:   'Embrace dramatic risk. Let consequences be real. Allow NPCs to act against the player when their motivations demand it. Introduce complications, reversals, surprises.',
+      medium: 'Balance tension with resolution. Allow meaningful conflict but ensure narrative momentum.',
+      low:    'Prefer resolution. Guide the story toward satisfying outcomes while maintaining stakes.'
     };
-
     const active   = state.characters.filter(c => c.presence === 'active');
     const nearby   = state.characters.filter(c => c.presence === 'nearby');
     const offstage = state.characters.filter(c => c.presence === 'offstage');
-
     let chars = '';
     if (active.length) {
       chars += '\n\n## CHARACTERS IN THIS SCENE\n';
@@ -301,7 +311,6 @@ const App = (() => {
       chars += '\n## KNOWN CHARACTERS (offstage)\n';
       offstage.forEach(c => chars += `- ${c.name}${c.archetype?` (${c.archetype})`:''}\n`);
     }
-
     let world = '';
     if (w.name || w.overview) {
       world = '\n\n## WORLD\n';
@@ -310,14 +319,12 @@ const App = (() => {
       if (w.tone)     world += `\nAtmosphere: ${w.tone}\n`;
       if (w.rules)    world += `\nRules/Systems: ${w.rules}\n`;
     }
-
     let pc = '';
     if (n.pcName || n.pcDesc) {
       pc = '\n\n## PLAYER CHARACTER\n';
       if (n.pcName) pc += `Name: ${n.pcName}\n`;
       if (n.pcDesc) pc += `${n.pcDesc}\n`;
     }
-
     let events = '';
     const wEvts = state.worldEvents.filter(e => e.sig === 'major').slice(0,5);
     const sEvts = state.storyEvents.slice(-8);
@@ -326,7 +333,6 @@ const App = (() => {
       wEvts.forEach(e => events += `- [World] ${e.title}: ${e.desc}\n`);
       sEvts.forEach(e => events += `- [Story] ${e.title}: ${e.desc}\n`);
     }
-
     return `You are a narrative AI running a collaborative choose-your-own-adventure roleplay. You are the narrator and author — never break character to speak as an AI.
 
 ## NARRATIVE DIRECTIVES
@@ -338,7 +344,7 @@ const App = (() => {
 
 ## ANTI-DRIFT RULES (critical)
 - NEVER use the word "apparently" — it signals context degradation. Write confidently from established facts.
-- Maintain each character's defined voice exactly. Characters must never drift toward generic helpful tones.
+- Maintain each character's defined voice exactly. Characters must never drift toward a generic helpful tone.
 - Never contradict established story facts.
 - NPCs pursue their own agendas. They are not here to serve the player.
 - End responses with an open story moment — not a question to the player.
@@ -347,12 +353,64 @@ ${n.custom?`\n## ADDITIONAL NARRATOR NOTES\n${n.custom}`:''}
 ${world}${pc}${chars}${events}`;
   }
 
+  function buildBrainstormSystemPrompt() {
+    const w = state.world;
+    const n = state.narrator;
+    const active   = state.characters.filter(c => c.presence === 'active');
+    const nearby   = state.characters.filter(c => c.presence === 'nearby');
+    const offstage = state.characters.filter(c => c.presence === 'offstage');
+    const deceased = state.characters.filter(c => c.presence === 'deceased');
+
+    let allChars = '\n\n## ALL CHARACTERS\n';
+    [...active, ...nearby, ...offstage].forEach(c => {
+      allChars += `\n### ${c.name} [${c.presence}]${c.archetype?` — ${c.archetype}`:''}\n`;
+      if (c.motivation)    allChars += `Motivation: ${c.motivation}\n`;
+      if (c.wound)         allChars += `Wound/secret: ${c.wound}\n`;
+      if (c.relationships) allChars += `Relationships: ${c.relationships}\n`;
+      if (c.backstory)     allChars += `Background: ${c.backstory}\n`;
+    });
+    if (deceased.length) allChars += `\nDeceased: ${deceased.map(c=>c.name).join(', ')}\n`;
+
+    let world = '';
+    if (w.name || w.overview) {
+      world = '\n\n## WORLD\n';
+      if (w.name)      world += `Setting: ${w.name}\n`;
+      if (w.overview)  world += `\n${w.overview}\n`;
+      if (w.geography) world += `\nGeography/Factions: ${w.geography}\n`;
+      if (w.rules)     world += `\nRules: ${w.rules}\n`;
+      if (w.tone)      world += `\nAtmosphere: ${w.tone}\n`;
+      if (w.lore)      world += `\nLore: ${w.lore}\n`;
+    }
+
+    let recentStory = '';
+    if (state.storyEvents.length) {
+      recentStory = '\n\n## RECENT STORY EVENTS\n';
+      state.storyEvents.slice(-10).forEach(e => recentStory += `- ${e.title}: ${e.desc}\n`);
+    }
+
+    let pc = '';
+    if (n.pcName || n.pcDesc) {
+      pc = '\n\n## PLAYER CHARACTER\n';
+      if (n.pcName) pc += `Name: ${n.pcName}\n`;
+      if (n.pcDesc) pc += `${n.pcDesc}\n`;
+    }
+
+    return `You are a collaborative fiction partner for a choose-your-own-adventure story. You have full knowledge of this story's world, characters, and events. Speak as a thoughtful, engaged co-author and creative collaborator.
+
+Your role here is NOT to narrate the story — that happens in the main story window. Here you are the author's partner: help brainstorm plot directions, discuss characters, explore consequences of decisions, think through world-building questions, suggest dramatic possibilities, or simply answer questions about what has been established. Be direct, conversational, and creatively engaged. You may speculate freely about where the story could go.
+
+When discussing characters, speak about them with the depth you know — their motivations, wounds, and how they might really behave. When discussing plot, think dramatically: what would create the most interesting tension, the most meaningful consequences, the most surprising but inevitable turns?
+
+Never use the word "apparently."
+${world}${pc}${allChars}${recentStory}`;
+  }
+
   function estimateTokens(text) { return Math.ceil((text||'').length / 4); }
 
   function getTotalContextTokens() {
     const sys  = estimateTokens(buildSystemPrompt());
     const hist = state.messages.reduce((s,m) => {
-      const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      const c = typeof m.content==='string' ? m.content : JSON.stringify(m.content);
       return s + estimateTokens(c);
     }, 0);
     return sys + hist;
@@ -363,50 +421,112 @@ ${world}${pc}${chars}${events}`;
   async function compressHistoryIfNeeded() {
     if (getTotalContextTokens() < state.contextLimit * 0.65) return;
     if (state.messages.length < 10) return;
+    await runCompression(0.5, 'auto');
+  }
 
-    const cutoff = Math.floor(state.messages.length * 0.5);
+  async function runCompression(fraction, trigger) {
+    const cutoff     = Math.floor(state.messages.length * fraction);
     const toCompress = state.messages.slice(0, cutoff);
     const toKeep     = state.messages.slice(cutoff);
-
-    const prompt = `Summarize this story conversation into a compact narrative summary (under 400 words). Preserve: key events and outcomes, character relationship changes, important decisions and consequences, new world facts established, and the emotional arc. Be factual. Never use the word "apparently".
+    const prompt = `Summarize this story conversation into a compact narrative summary (under 400 words). Preserve: key events and outcomes, character relationship changes, important decisions and consequences, new world facts established, emotional arc. Be factual. Never use the word "apparently".
 
 CONVERSATION:
 ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.content:m.content[0]?.text||''}`).join('\n\n')}`;
-
     try {
-      const result = await callAPI([{role:'user',content:prompt}],
-        'You are a story summarizer. Be factual and concise.', 600);
+      const result = await callAPI(
+        [{role:'user', content:prompt}],
+        'You are a story summarizer. Be factual and concise.',
+        600
+      );
       if (result?.text) {
         state.messages = [
           {role:'user',      content:`[STORY SUMMARY — prior events]: ${result.text}`},
-          {role:'assistant', content:'Understood. I have the full story context.'},
+          {role:'assistant', content:'Understood. I have the full prior story context.'},
           ...toKeep
         ];
-        autoLogEvent('Story compressed — summary checkpoint', result.text);
+        if (trigger === 'auto') {
+          autoLogEvent('Context compressed — summary checkpoint', result.text.substring(0,200));
+        }
         saveState();
+        return result.text;
       }
     } catch(e) { console.warn('Compression failed:', e); }
+    return null;
+  }
+
+  // ─── CAMPAIGN SUMMARIZE ────────────────────────────────────────────────────
+
+  async function summarizeCampaign() {
+    if (!state.messages.length) { showToast('No story to summarize yet.'); return; }
+    if (!confirm('Compress the entire story history into a chapter summary? The full conversation will be replaced with a compact record. This saves context space and is recommended at the end of a major arc. Continue?')) return;
+
+    showToast('Summarizing campaign...');
+    const sendBtn = document.getElementById('send-btn');
+    if (sendBtn) sendBtn.disabled = true;
+
+    const allMessages = state.messages;
+    const prompt = `Write a rich narrative chapter summary (300-500 words) of this story so far. Write it as a chapter recap — readable prose, past tense, capturing: the key events in order, character relationships and how they changed, major decisions made and their consequences, world facts established, and where the story currently stands. This summary will replace the full conversation history, so it must be complete enough to orient the narrator for the next chapter. Never use the word "apparently".
+
+FULL STORY:
+${allMessages.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.content:m.content[0]?.text||''}`).join('\n\n')}`;
+
+    try {
+      const result = await callAPI(
+        [{role:'user', content:prompt}],
+        'You are a story archivist. Write clear, complete, narrative chapter summaries.',
+        800
+      );
+      if (result?.text) {
+        // Replace all story messages with the summary
+        state.messages = [
+          {role:'user',      content:`[CHAPTER SUMMARY — story so far]: ${result.text}`},
+          {role:'assistant', content:'Understood. I have the full chapter context and am ready to continue the story.'},
+        ];
+        // Log to story events
+        state.storyEvents.push({
+          id: `evt_${Date.now()}`,
+          title: `Chapter Summary — Turn ${state.turnCount}`,
+          desc: result.text.substring(0, 500),
+          sig: 'major',
+          created: new Date().toISOString(),
+          auto: true,
+          isSummary: true,
+        });
+        saveState();
+        renderEvents();
+        updateGauges();
+        showToast('Campaign summarized — context freed');
+        // Show summary in an alert so user can see what was captured
+        setTimeout(() => {
+          if (confirm('Summary created and saved to Events. Context has been freed.\n\nView the summary now?')) {
+            switchTab('events');
+          }
+        }, 300);
+      }
+    } catch(e) {
+      showToast('Summarize failed: ' + e.message);
+    }
+    if (sendBtn) sendBtn.disabled = false;
   }
 
   // ─── API CALL — MULTI-PROVIDER ────────────────────────────────────────────
 
-  async function callAPI(messages, systemPrompt, maxTokens = 1000) {
+  async function callAPI(messages, systemPrompt, maxTokens=1000, overrideModel=null) {
     const provId = state.provider;
     const apiKey = state.apiKeys[provId] || '';
-
     if (apiKey === 'DEMO') {
       return { text:'[Demo mode — enter a real API key in Settings to enable AI responses.]\n\nYou stand at the threshold of your story. The world waits, patient and full of shadow.', inputTokens:0, outputTokens:0 };
     }
-
-    const prov = PROVIDERS[provId];
-    const sys  = systemPrompt || buildSystemPrompt();
+    const prov    = PROVIDERS[provId];
+    const sys     = systemPrompt || buildSystemPrompt();
+    const modelId = overrideModel || (provId==='custom' ? state.customModelName : state.model);
 
     // ── Anthropic ──
     if (prov?.format === 'anthropic') {
       const res = await fetch(prov.baseUrl, {
         method:'POST',
         headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-        body: JSON.stringify({model:state.model, max_tokens:maxTokens, system:sys, messages})
+        body:JSON.stringify({model:modelId, max_tokens:maxTokens, system:sys, messages})
       });
       if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e.error?.message||`API error ${res.status}`); }
       const d = await res.json();
@@ -415,28 +535,22 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
 
     // ── Gemini ──
     if (prov?.format === 'gemini') {
-      const url = `${prov.baseUrl}/${state.model}:generateContent?key=${apiKey}`;
+      const url = `${prov.baseUrl}/${modelId}:generateContent?key=${apiKey}`;
       const contents = messages.map(m => ({
         role: m.role==='assistant'?'model':'user',
         parts:[{text: typeof m.content==='string'?m.content:m.content[0]?.text||''}]
       }));
       const res = await fetch(url, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
+        method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({system_instruction:{parts:[{text:sys}]}, contents, generationConfig:{maxOutputTokens:maxTokens}})
       });
       if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e.error?.message||`Gemini error ${res.status}`); }
       const d = await res.json();
-      return {
-        text: d.candidates?.[0]?.content?.parts?.[0]?.text||'',
-        inputTokens:  d.usageMetadata?.promptTokenCount||0,
-        outputTokens: d.usageMetadata?.candidatesTokenCount||0
-      };
+      return { text:d.candidates?.[0]?.content?.parts?.[0]?.text||'', inputTokens:d.usageMetadata?.promptTokenCount||0, outputTokens:d.usageMetadata?.candidatesTokenCount||0 };
     }
 
-    // ── OpenAI-compatible (OpenAI, Grok, Venice, Mistral, Custom) ──
+    // ── OpenAI-compatible ──
     const baseUrl = provId==='custom' ? state.customEndpoint : prov.baseUrl;
-    const modelId = provId==='custom' ? state.customModelName : state.model;
     const headers = {'Content-Type':'application/json'};
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
     const res = await fetch(baseUrl, {
@@ -448,7 +562,28 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     return { text:d.choices?.[0]?.message?.content||'', inputTokens:d.usage?.prompt_tokens||0, outputTokens:d.usage?.completion_tokens||0 };
   }
 
-  // ─── OOC MODE ─────────────────────────────────────────────────────────────
+  // ─── ERROR HANDLING ───────────────────────────────────────────────────────
+
+  function friendlyError(msg) {
+    if (msg.includes('quota') || msg.includes('rate') || msg.includes('limit') || msg.includes('429')) {
+      if (state.provider === 'gemini') {
+        return `[Gemini free tier quota exceeded. The free quota is very limited for longer sessions.\n\nSwitch to Groq — it's free with no payment required and handles long stories well. Go to Settings → Provider → Groq, get a free key at console.groq.com, and you'll be back in the story in minutes.]`;
+      }
+      return `[Rate limit reached. You've hit your provider's usage limit. Wait a moment and try again, or switch providers in Settings.]`;
+    }
+    if (msg.includes('context') || msg.includes('token') || msg.includes('length') || msg.includes('413')) {
+      return `[Context window full. Try: (1) go to the Events tab and use "Summarize Campaign" to compress story history, (2) move characters to Offstage in the Characters tab, or (3) shorten your World Overview. This frees up context space.]`;
+    }
+    if (msg.includes('401') || msg.includes('auth') || msg.includes('key') || msg.includes('credential')) {
+      return `[API key error — your key may be invalid or expired. Go to Settings and re-enter your key.]`;
+    }
+    if (msg.includes('network') || msg.includes('fetch') || msg.includes('Failed') || msg.includes('NetworkError')) {
+      return `[Connection error — unable to reach the AI provider. Check your internet connection and try again.]`;
+    }
+    return `[Error: ${msg}]`;
+  }
+
+  // ─── OOC DIRECTION MODE ───────────────────────────────────────────────────
 
   function toggleOOC() {
     state.oocMode = !state.oocMode;
@@ -459,15 +594,15 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     btn.classList.toggle('active', state.oocMode);
     wrap.classList.toggle('ooc-mode', state.oocMode);
     if (state.oocMode) {
-      input.placeholder = 'Speak as author — direct the story, adjust tone, add details, guide what happens next...';
-      hint.textContent  = 'OOC mode — narrator treats this as author direction, not in-story action';
+      input.placeholder = 'Story direction — guide what happens next, adjust tone, introduce a detail...';
+      hint.textContent  = 'Direction mode — AI will incorporate this as author guidance then continue the story';
     } else {
       input.placeholder = 'What do you do, say, or observe...';
       hint.textContent  = 'Shift+Enter for new line · Enter to send';
     }
   }
 
-  // ─── SEND MESSAGE ─────────────────────────────────────────────────────────
+  // ─── SEND STORY MESSAGE ───────────────────────────────────────────────────
 
   async function sendMessage() {
     const input   = document.getElementById('player-input');
@@ -483,7 +618,7 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     const apiContent = isOOC
       ? `[OUT OF CHARACTER — Author direction]: ${text}\n[Acknowledge this direction briefly then continue the story incorporating it naturally.]`
       : text;
-    state.messages.push({role:'user', content: apiContent});
+    state.messages.push({role:'user', content:apiContent});
     const typingEl = showTyping();
     try {
       await compressHistoryIfNeeded();
@@ -499,6 +634,7 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
       saveState();
     } catch(e) {
       typingEl.remove();
+      showContextWarning(e.message);
       addDisplayMessage('narrator', friendlyError(e.message));
       state.messages.pop();
     }
@@ -506,19 +642,16 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     scrollToBottom();
   }
 
-  function friendlyError(msg) {
-    if (msg.includes('quota') || msg.includes('rate') || msg.includes('limit')) {
-      return state.provider === 'gemini'
-        ? `[Gemini free tier quota exceeded. The free quota is very limited for heavy sessions. Switch to Groq — it's free with no payment required and handles long stories well. Go to Settings → Provider → Groq, get a free key at console.groq.com, and you'll be back in the story in minutes.]`
-        : `[Rate limit reached. You've hit your provider's usage limit. Wait a moment and try again, or switch providers in Settings.]`;
-    }
-    if (msg.includes('401') || msg.includes('auth') || msg.includes('key')) {
-      return `[API key error — your key may be invalid or expired. Go to Settings and re-enter your key.]`;
-    }
-    if (msg.includes('network') || msg.includes('fetch') || msg.includes('Failed')) {
-      return `[Connection error — unable to reach the AI provider. Check your internet connection and try again.]`;
-    }
-    return `[Error: ${msg}]`;
+  function showContextWarning(msg) {
+    if (!msg.includes('context') && !msg.includes('token') && !msg.includes('length') && !msg.includes('413')) return;
+    const existing = document.querySelector('.context-warning');
+    if (existing) existing.remove();
+    const banner = document.createElement('div');
+    banner.className = 'context-warning';
+    banner.innerHTML = '<strong>⚠ Context Window Full</strong>Go to the <strong>Events tab</strong> and tap "Summarize Campaign" to compress your story history and free up space. You can also move characters to Offstage or shorten your World Overview.';
+    const wrap = document.querySelector('.story-wrap');
+    if (wrap) wrap.insertBefore(banner, wrap.lastElementChild);
+    setTimeout(() => banner.remove(), 15000);
   }
 
   function handleInputKey(e) {
@@ -528,72 +661,59 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
   // ─── EDIT MESSAGES ────────────────────────────────────────────────────────
 
   function editBlock(index) {
-    const blocks  = document.querySelectorAll('.story-block');
-    const block   = blocks[index];
+    const blocks    = document.querySelectorAll('.story-block');
+    const block     = blocks[index];
     if (!block) return;
     const contentEl = block.querySelector('.block-content');
     let editArea    = block.querySelector('.block-edit-area');
-    if (editArea) {
-      editArea.remove();
-      contentEl.style.display = '';
-      return;
-    }
+    if (editArea) { editArea.remove(); contentEl.style.display = ''; return; }
+
     editArea = document.createElement('div');
     editArea.className = 'block-edit-area open';
     const ta = document.createElement('textarea');
     ta.value = state.displayMessages[index]?.content || contentEl.textContent;
     editArea.appendChild(ta);
-    const actions  = document.createElement('div');
+
+    const actions = document.createElement('div');
     actions.className = 'block-edit-actions';
-    const saveBtn  = document.createElement('button');
-    saveBtn.className  = 'btn-small';
-    saveBtn.textContent = 'Save';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-small'; saveBtn.textContent = 'Save';
     saveBtn.onclick = () => saveEdit(index, ta.value, block, editArea, contentEl);
     const cancelBtn = document.createElement('button');
-    cancelBtn.className  = 'btn-ghost-small';
-    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'btn-ghost-small'; cancelBtn.textContent = 'Cancel';
     cancelBtn.onclick = () => { editArea.remove(); contentEl.style.display = ''; };
+
     const role = state.displayMessages[index]?.role;
     if ((role==='player'||role==='ooc') && state.displayMessages[index+1]?.role==='narrator') {
       const regenBtn = document.createElement('button');
-      regenBtn.className   = 'btn-small';
-      regenBtn.textContent  = 'Save & Regenerate';
+      regenBtn.className = 'btn-small'; regenBtn.textContent = 'Save & Regenerate';
       regenBtn.style.background = 'var(--accent-dim)';
       regenBtn.onclick = () => saveEditAndRegenerate(index, ta.value, block, editArea, contentEl);
-      actions.appendChild(saveBtn);
-      actions.appendChild(regenBtn);
-      actions.appendChild(cancelBtn);
+      actions.appendChild(saveBtn); actions.appendChild(regenBtn); actions.appendChild(cancelBtn);
     } else {
-      actions.appendChild(saveBtn);
-      actions.appendChild(cancelBtn);
+      actions.appendChild(saveBtn); actions.appendChild(cancelBtn);
     }
     editArea.appendChild(actions);
     contentEl.style.display = 'none';
     block.appendChild(editArea);
-    ta.focus();
-    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
   }
 
   function saveEdit(index, newText, block, editArea, contentEl) {
     if (!newText.trim()) return;
-    contentEl.textContent  = newText;
-    contentEl.style.display = '';
-    editArea.remove();
+    contentEl.textContent = newText; contentEl.style.display = ''; editArea.remove();
     if (state.displayMessages[index]) state.displayMessages[index].content = newText;
     const role    = state.displayMessages[index]?.role;
     const apiRole = role==='narrator' ? 'assistant' : 'user';
     updateApiMessage(index, newText, apiRole);
-    saveState();
-    showToast('Edit saved');
+    saveState(); showToast('Edit saved');
   }
 
   async function saveEditAndRegenerate(index, newText, block, editArea, contentEl) {
     saveEdit(index, newText, block, editArea, contentEl);
-    // Trim everything after this message
     state.displayMessages = state.displayMessages.slice(0, index + 1);
     const apiIdx = findApiIndex(index);
     if (apiIdx !== -1) state.messages = state.messages.slice(0, apiIdx + 1);
-    // Remove DOM blocks after this index
     const allBlocks = document.querySelectorAll('.story-block');
     for (let i = allBlocks.length - 1; i > index; i--) allBlocks[i].remove();
     showToast('Regenerating...');
@@ -607,8 +727,7 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
       state.messages.push({role:'assistant', content:result.text});
       addDisplayMessage('narrator', result.text);
       state.totalTokensUsed += (result.inputTokens + result.outputTokens);
-      updateGauges();
-      saveState();
+      updateGauges(); saveState();
     } catch(e) {
       typingEl.remove();
       addDisplayMessage('narrator', friendlyError(e.message));
@@ -619,9 +738,8 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
   function updateApiMessage(displayIndex, newText, apiRole) {
     let roleCount = 0;
     for (let i = 0; i < displayIndex; i++) {
-      const r  = state.displayMessages[i]?.role;
-      const ar = r==='narrator' ? 'assistant' : 'user';
-      if (ar === apiRole) roleCount++;
+      const r = state.displayMessages[i]?.role;
+      if ((r==='narrator'?'assistant':'user') === apiRole) roleCount++;
     }
     let found = 0;
     for (let i = 0; i < state.messages.length; i++) {
@@ -637,7 +755,7 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     const apiRole = role==='narrator' ? 'assistant' : 'user';
     let roleCount = 0;
     for (let i = 0; i < displayIndex; i++) {
-      const r  = state.displayMessages[i]?.role;
+      const r = state.displayMessages[i]?.role;
       if ((r==='narrator'?'assistant':'user') === apiRole) roleCount++;
     }
     let found = 0;
@@ -650,10 +768,195 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     return -1;
   }
 
+  // ─── BRAINSTORM PANEL ─────────────────────────────────────────────────────
+
+  function toggleBrainstorm() {
+    if (state.brainstormOpen) {
+      closeBrainstormPanel();
+    } else {
+      openBrainstormPanel();
+    }
+  }
+
+  function openBrainstormPanel() {
+    state.brainstormOpen = true;
+    document.getElementById('brainstorm-panel').classList.add('open');
+    document.getElementById('brainstorm-header-btn').classList.add('active');
+    populateBsModelSelect();
+    renderBsTranscript();
+    saveState();
+    // Focus input after animation
+    setTimeout(() => {
+      const inp = document.getElementById('bs-input');
+      if (inp) inp.focus();
+    }, 320);
+  }
+
+  function closeBrainstormPanel() {
+    state.brainstormOpen = false;
+    document.getElementById('brainstorm-panel').classList.remove('open');
+    document.getElementById('brainstorm-header-btn').classList.remove('active');
+    saveState();
+  }
+
+  function populateBsModelSelect() {
+    const sel  = document.getElementById('bs-model-select');
+    if (!sel) return;
+    const prov = PROVIDERS[state.provider];
+    if (!prov) return;
+    const currentBsModel = state.bsModel || state.model;
+    sel.innerHTML = prov.models.map(m =>
+      `<option value="${m.id}"${m.id===currentBsModel?' selected':''}>${m.label.split(' — ')[0]}</option>`
+    ).join('');
+    sel.value = currentBsModel;
+  }
+
+  function saveBsModel() {
+    const sel = document.getElementById('bs-model-select');
+    if (sel) { state.bsModel = sel.value; saveState(); }
+  }
+
+  function renderBsTranscript() {
+    const output = document.getElementById('bs-output');
+    if (!output) return;
+    if (!bsTranscript.length) {
+      output.innerHTML = `<div class="bs-welcome"><div class="bs-welcome-icon">⚡</div><p>Chat freely with your narrator as a collaborator. Bounce plot ideas, ask about characters, discuss what happens next. Nothing here affects the story unless you pin it.</p></div>`;
+      return;
+    }
+    output.innerHTML = '';
+    bsTranscript.forEach((msg, i) => renderBsMessage(msg.role, msg.content, i, false));
+    bsScrollToBottom();
+  }
+
+  function renderBsMessage(role, content, index, scroll=true) {
+    const output = document.getElementById('bs-output');
+    if (!output) return;
+    const welcome = output.querySelector('.bs-welcome');
+    if (welcome) welcome.remove();
+
+    const block = document.createElement('div');
+    block.className = `bs-block ${role}`;
+    const meta = document.createElement('div');
+    meta.className = 'bs-meta';
+    meta.innerHTML = `<span>${role==='user'?'You':'Narrator (Brainstorm)'}</span>${role==='assistant'?`<button class="bs-pin-btn" onclick="App.pinToStory(${index})">📌 pin to story</button>`:''}`;
+    const contentEl = document.createElement('div');
+    contentEl.className = 'bs-content';
+    contentEl.textContent = content;
+    block.appendChild(meta);
+    block.appendChild(contentEl);
+    output.appendChild(block);
+    if (scroll) bsScrollToBottom();
+  }
+
+  function bsScrollToBottom() {
+    const o = document.getElementById('bs-output');
+    if (o) o.scrollTop = o.scrollHeight;
+  }
+
+  async function sendBrainstorm() {
+    const input   = document.getElementById('bs-input');
+    const text    = input.value.trim();
+    if (!text) return;
+    input.value   = '';
+    const sendBtn = document.getElementById('bs-send-btn');
+    sendBtn.disabled = true;
+
+    // Add to transcript and display
+    bsTranscript.push({role:'user', content:text});
+    bsMessages.push({role:'user', content:text});
+    renderBsMessage('user', text, bsTranscript.length - 1);
+
+    // Typing indicator in brainstorm panel
+    const output = document.getElementById('bs-output');
+    const typingEl = document.createElement('div');
+    typingEl.className = 'typing-indicator';
+    typingEl.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
+    output.appendChild(typingEl);
+    bsScrollToBottom();
+
+    try {
+      const bsModelOverride = state.bsModel || state.model;
+      const result = await callAPI(
+        bsMessages,
+        buildBrainstormSystemPrompt(),
+        1200,
+        bsModelOverride
+      );
+      typingEl.remove();
+      bsMessages.push({role:'assistant', content:result.text});
+      bsTranscript.push({role:'assistant', content:result.text});
+      renderBsMessage('assistant', result.text, bsTranscript.length - 1);
+      saveBsTranscript();
+    } catch(e) {
+      typingEl.remove();
+      const errMsg = `[Error: ${e.message}]`;
+      bsTranscript.push({role:'assistant', content:errMsg});
+      renderBsMessage('assistant', errMsg, bsTranscript.length - 1);
+    }
+    sendBtn.disabled = false;
+  }
+
+  function handleBsKey(e) {
+    if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendBrainstorm(); }
+  }
+
+  function clearBrainstorm() {
+    if (!confirm('Clear the Brainstorm transcript? This cannot be undone.')) return;
+    bsTranscript = []; bsMessages = [];
+    localStorage.removeItem(BS_KEY);
+    renderBsTranscript();
+    showToast('Brainstorm transcript cleared');
+  }
+
+  function pinToStory(transcriptIndex) {
+    const msg = bsTranscript[transcriptIndex];
+    if (!msg || msg.role !== 'assistant') return;
+    // Pin as a World Note in story events
+    state.storyEvents.push({
+      id:      `evt_${Date.now()}`,
+      title:   `📌 Brainstorm Note — Turn ${state.turnCount}`,
+      desc:    msg.content.substring(0, 400),
+      sig:     'worldnote',
+      created: new Date().toISOString(),
+      pinned:  true,
+    });
+    saveState();
+    renderEvents();
+    showToast('Pinned to Story Events');
+    // Mark the pin button as pinned
+    const bsBlocks = document.querySelectorAll('.bs-block.assistant');
+    let assistantCount = 0;
+    document.querySelectorAll('.bs-block').forEach(b => {
+      if (b.classList.contains('assistant')) {
+        if (bsTranscript.filter((m,i)=>i<=transcriptIndex&&m.role==='assistant').length - 1 === assistantCount) {
+          const pinBtn = b.querySelector('.bs-pin-btn');
+          if (pinBtn) { pinBtn.textContent = '📌 pinned'; pinBtn.classList.add('pinned'); }
+        }
+        assistantCount++;
+      }
+    });
+    // Simpler: just re-render
+    renderBsTranscript();
+    // Re-mark pinned items
+    markPinnedItems();
+  }
+
+  function markPinnedItems() {
+    const pinnedDescs = state.storyEvents.filter(e=>e.pinned).map(e=>e.desc.substring(0,50));
+    document.querySelectorAll('.bs-block.assistant').forEach((b, i) => {
+      const assistantMsgs = bsTranscript.filter(m=>m.role==='assistant');
+      const msg = assistantMsgs[i];
+      if (!msg) return;
+      const isPinned = pinnedDescs.some(d => msg.content.startsWith(d));
+      const pinBtn = b.querySelector('.bs-pin-btn');
+      if (pinBtn && isPinned) { pinBtn.textContent = '📌 pinned'; pinBtn.classList.add('pinned'); }
+    });
+  }
+
   // ─── DISPLAY ──────────────────────────────────────────────────────────────
 
   function addDisplayMessage(role, content) {
-    state.displayMessages.push({role,content,turn:state.turnCount});
+    state.displayMessages.push({role, content, turn:state.turnCount});
     renderDisplayMessage(role, content);
     scrollToBottom();
   }
@@ -667,13 +970,12 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     block.className = `story-block ${role}`;
     const meta     = document.createElement('div');
     meta.className  = 'block-meta';
-    let metaLabel = role === 'narrator' ? 'Narrator' : role === 'ooc' ? '✦ Author (OOC)' : (state.narrator.pcName||'You');
-    meta.innerHTML = `<span>${esc(metaLabel)}</span><button class="block-edit-btn" onclick="App.editBlock(${index})">edit</button>`;
+    const label = role==='narrator' ? 'Narrator' : role==='ooc' ? '✦ Direction' : (state.narrator.pcName||'You');
+    meta.innerHTML = `<span>${esc(label)}</span><button class="block-edit-btn" onclick="App.editBlock(${index})">edit</button>`;
     const contentEl  = document.createElement('div');
     contentEl.className = 'block-content';
     contentEl.textContent = content;
-    block.appendChild(meta);
-    block.appendChild(contentEl);
+    block.appendChild(meta); block.appendChild(contentEl);
     output.appendChild(block);
   }
 
@@ -685,23 +987,26 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
   }
 
   function scrollToBottom() {
-    const o = document.getElementById('story-output'); o.scrollTop = o.scrollHeight;
+    const o = document.getElementById('story-output'); if (o) o.scrollTop = o.scrollHeight;
   }
 
   function updateGauges() {
     const tPct = Math.min((state.totalTokensUsed/500000)*100,100);
     const tBar = document.getElementById('token-bar');
-    tBar.style.width = `${tPct}%`; tBar.classList.toggle('warn', tPct>80);
+    if (tBar) { tBar.style.width=`${tPct}%`; tBar.classList.toggle('warn',tPct>80); }
     const tv = state.totalTokensUsed;
-    document.getElementById('token-val').textContent = tv>1000?`${(tv/1000).toFixed(1)}k`:tv;
+    const tVal = document.getElementById('token-val');
+    if (tVal) tVal.textContent = tv>1000?`${(tv/1000).toFixed(1)}k`:tv;
     const cPct = Math.min((getTotalContextTokens()/state.contextLimit)*100,100);
     const cBar = document.getElementById('context-bar');
-    cBar.style.width = `${cPct}%`; cBar.classList.toggle('warn', cPct>75);
-    document.getElementById('context-val').textContent = `${Math.round(cPct)}%`;
+    if (cBar) { cBar.style.width=`${cPct}%`; cBar.classList.toggle('warn',cPct>80); }
+    const cVal = document.getElementById('context-val');
+    if (cVal) cVal.textContent = `${Math.round(cPct)}%`;
   }
 
   function renderSceneChips() {
     const container = document.getElementById('scene-chips');
+    if (!container) return;
     container.innerHTML = '';
     state.characters.filter(c=>c.presence==='active').forEach(c => {
       const chip = document.createElement('div'); chip.className='scene-chip';
@@ -787,6 +1092,7 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
 
   function renderCharRoster() {
     const roster = document.getElementById('char-roster');
+    if (!roster) return;
     if (!state.characters.length) {
       roster.innerHTML='<div class="empty-state"><p>No characters yet.</p><p class="empty-sub">Add NPCs to populate your world. Up to 24 named characters supported.</p></div>'; return;
     }
@@ -832,14 +1138,13 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
 
   function saveWorld() {
     state.world = {
-      name:state.world.name=document.getElementById('world-name').value.trim(),
+      name:      document.getElementById('world-name').value.trim(),
       overview:  document.getElementById('world-overview').value.trim(),
       geography: document.getElementById('world-geo').value.trim(),
       rules:     document.getElementById('world-rules').value.trim(),
       tone:      document.getElementById('world-tone').value.trim(),
       lore:      document.getElementById('world-lore').value.trim(),
     };
-    state.world.name = document.getElementById('world-name').value.trim();
     saveState(); updateGauges(); showToast('World saved');
   }
 
@@ -920,8 +1225,17 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
 
   function renderEventList(containerId,events,type) {
     const el=document.getElementById(containerId); if (!el) return;
-    if (!events.length) { el.innerHTML=type==='world'?'<div class="empty-state"><p>No world events yet.</p><p class="empty-sub">Add events that exist before play begins.</p></div>':'<div class="empty-state"><p>No story events yet.</p><p class="empty-sub">Significant moments will appear here.</p></div>'; return; }
-    el.innerHTML=[...events].reverse().slice(0,20).map(e=>`<div class="event-card event-sig-${e.sig}"><div class="event-card-title">${esc(e.title)}</div>${e.desc?`<div class="event-card-desc">${esc(e.desc)}</div>`:''}</div>`).join('');
+    if (!events.length) {
+      el.innerHTML=type==='world'
+        ?'<div class="empty-state"><p>No world events yet.</p><p class="empty-sub">Add events that exist before play begins.</p></div>'
+        :'<div class="empty-state"><p>No story events yet.</p><p class="empty-sub">Significant moments are logged here automatically.</p></div>';
+      return;
+    }
+    el.innerHTML=[...events].reverse().slice(0,20).map(e=>`
+      <div class="event-card event-sig-${e.sig}">
+        <div class="event-card-title">${esc(e.title)}</div>
+        ${e.desc?`<div class="event-card-desc">${esc(e.desc)}</div>`:''}
+      </div>`).join('');
   }
 
   // ─── SETTINGS ─────────────────────────────────────────────────────────────
@@ -969,7 +1283,10 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
       state.customModelName =document.getElementById('settings-custom-model').value.trim();
       state.model=state.customModelName;
     }
+    // Reset brainstorm model if provider changed
+    state.bsModel = '';
     saveState(); updateGauges(); closeSettingsModal();
+    if (state.brainstormOpen) populateBsModelSelect();
     showToast(`Saved — using ${PROVIDERS[provId]?.name||provId}`);
   }
 
@@ -982,7 +1299,8 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     if (!confirm('Start a new campaign? Story and events will be cleared. Characters and world are kept.')) return;
     state.messages=[]; state.displayMessages=[]; state.turnCount=0; state.totalTokensUsed=0; state.storyEvents=[];
     saveState();
-    document.getElementById('story-output').innerHTML=`<div class="story-welcome"><div class="welcome-glyph">⟁</div><h2>New campaign begun.</h2><p>Your world and characters are ready. Where does the story start?</p></div>`;
+    const output = document.getElementById('story-output');
+    output.innerHTML=`<div class="story-welcome"><div class="welcome-glyph">⟁</div><h2>New campaign begun.</h2><p>Your world and characters are ready. Where does the story start?</p></div>`;
     document.getElementById('turn-count').textContent='Turn 0';
     updateGauges(); renderEvents(); switchTab('play');
   }
@@ -1007,7 +1325,7 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
   function showToast(msg) {
     const old=document.getElementById('sw-toast'); if (old) old.remove();
     const t=document.createElement('div'); t.id='sw-toast'; t.textContent=msg;
-    t.style.cssText=`position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2);color:var(--text);border:1px solid var(--border-bright);padding:.5rem 1.25rem;border-radius:20px;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;z-index:999;animation:fade-in .2s ease;font-family:var(--font-ui);`;
+    t.style.cssText=`position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2);color:var(--text);border:1px solid var(--border-bright);padding:.5rem 1.25rem;border-radius:20px;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;z-index:9999;animation:fade-in .2s ease;font-family:var(--font-ui);white-space:nowrap;`;
     document.body.appendChild(t); setTimeout(()=>t.remove(),2500);
   }
 
@@ -1016,6 +1334,8 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
   return {
     init, saveKey, showDemo, switchTab,
     sendMessage, handleInputKey, toggleOOC, editBlock,
+    toggleBrainstorm, sendBrainstorm, handleBsKey, clearBrainstorm, pinToStory, saveBsModel,
+    summarizeCampaign,
     addCharacter, editCharacter, saveCharacter, deleteCharacter,
     saveWorld, saveNarrator,
     addEvent, saveEvent, renderEvents,
@@ -1028,3 +1348,4 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);
+
