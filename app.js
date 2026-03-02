@@ -155,6 +155,7 @@ const App = (() => {
     lastOutputTokens: 0,
     editingCharId: null,
     pendingEventType: null,
+    oocMode: false,
   };
 
   // ─── INIT ─────────────────────────────────────────────────────────────────
@@ -447,19 +448,42 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     return { text:d.choices?.[0]?.message?.content||'', inputTokens:d.usage?.prompt_tokens||0, outputTokens:d.usage?.completion_tokens||0 };
   }
 
+  // ─── OOC MODE ─────────────────────────────────────────────────────────────
+
+  function toggleOOC() {
+    state.oocMode = !state.oocMode;
+    const btn   = document.getElementById('ooc-toggle');
+    const wrap  = document.getElementById('input-wrap');
+    const input = document.getElementById('player-input');
+    const hint  = document.getElementById('input-hint');
+    btn.classList.toggle('active', state.oocMode);
+    wrap.classList.toggle('ooc-mode', state.oocMode);
+    if (state.oocMode) {
+      input.placeholder = 'Speak as author — direct the story, adjust tone, add details, guide what happens next...';
+      hint.textContent  = 'OOC mode — narrator treats this as author direction, not in-story action';
+    } else {
+      input.placeholder = 'What do you do, say, or observe...';
+      hint.textContent  = 'Shift+Enter for new line · Enter to send';
+    }
+  }
+
   // ─── SEND MESSAGE ─────────────────────────────────────────────────────────
 
   async function sendMessage() {
-    const input = document.getElementById('player-input');
-    const text  = input.value.trim();
+    const input   = document.getElementById('player-input');
+    const text    = input.value.trim();
     if (!text) return;
-    input.value = '';
+    input.value   = '';
+    const isOOC   = state.oocMode;
     const sendBtn = document.getElementById('send-btn');
     sendBtn.disabled = true;
     state.turnCount++;
-    addDisplayMessage('player', text);
+    addDisplayMessage(isOOC ? 'ooc' : 'player', text);
     document.getElementById('turn-count').textContent = `Turn ${state.turnCount}`;
-    state.messages.push({role:'user', content:text});
+    const apiContent = isOOC
+      ? `[OUT OF CHARACTER — Author direction]: ${text}\n[Acknowledge this direction briefly then continue the story incorporating it naturally.]`
+      : text;
+    state.messages.push({role:'user', content: apiContent});
     const typingEl = showTyping();
     try {
       await compressHistoryIfNeeded();
@@ -475,15 +499,155 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
       saveState();
     } catch(e) {
       typingEl.remove();
-      addDisplayMessage('narrator', `[Error: ${e.message}]`);
+      addDisplayMessage('narrator', friendlyError(e.message));
       state.messages.pop();
     }
     sendBtn.disabled = false;
     scrollToBottom();
   }
 
+  function friendlyError(msg) {
+    if (msg.includes('quota') || msg.includes('rate') || msg.includes('limit')) {
+      return state.provider === 'gemini'
+        ? `[Gemini free tier quota exceeded. The free quota is very limited for heavy sessions. Switch to Groq — it's free with no payment required and handles long stories well. Go to Settings → Provider → Groq, get a free key at console.groq.com, and you'll be back in the story in minutes.]`
+        : `[Rate limit reached. You've hit your provider's usage limit. Wait a moment and try again, or switch providers in Settings.]`;
+    }
+    if (msg.includes('401') || msg.includes('auth') || msg.includes('key')) {
+      return `[API key error — your key may be invalid or expired. Go to Settings and re-enter your key.]`;
+    }
+    if (msg.includes('network') || msg.includes('fetch') || msg.includes('Failed')) {
+      return `[Connection error — unable to reach the AI provider. Check your internet connection and try again.]`;
+    }
+    return `[Error: ${msg}]`;
+  }
+
   function handleInputKey(e) {
     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  }
+
+  // ─── EDIT MESSAGES ────────────────────────────────────────────────────────
+
+  function editBlock(index) {
+    const blocks  = document.querySelectorAll('.story-block');
+    const block   = blocks[index];
+    if (!block) return;
+    const contentEl = block.querySelector('.block-content');
+    let editArea    = block.querySelector('.block-edit-area');
+    if (editArea) {
+      editArea.remove();
+      contentEl.style.display = '';
+      return;
+    }
+    editArea = document.createElement('div');
+    editArea.className = 'block-edit-area open';
+    const ta = document.createElement('textarea');
+    ta.value = state.displayMessages[index]?.content || contentEl.textContent;
+    editArea.appendChild(ta);
+    const actions  = document.createElement('div');
+    actions.className = 'block-edit-actions';
+    const saveBtn  = document.createElement('button');
+    saveBtn.className  = 'btn-small';
+    saveBtn.textContent = 'Save';
+    saveBtn.onclick = () => saveEdit(index, ta.value, block, editArea, contentEl);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className  = 'btn-ghost-small';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => { editArea.remove(); contentEl.style.display = ''; };
+    const role = state.displayMessages[index]?.role;
+    if ((role==='player'||role==='ooc') && state.displayMessages[index+1]?.role==='narrator') {
+      const regenBtn = document.createElement('button');
+      regenBtn.className   = 'btn-small';
+      regenBtn.textContent  = 'Save & Regenerate';
+      regenBtn.style.background = 'var(--accent-dim)';
+      regenBtn.onclick = () => saveEditAndRegenerate(index, ta.value, block, editArea, contentEl);
+      actions.appendChild(saveBtn);
+      actions.appendChild(regenBtn);
+      actions.appendChild(cancelBtn);
+    } else {
+      actions.appendChild(saveBtn);
+      actions.appendChild(cancelBtn);
+    }
+    editArea.appendChild(actions);
+    contentEl.style.display = 'none';
+    block.appendChild(editArea);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+
+  function saveEdit(index, newText, block, editArea, contentEl) {
+    if (!newText.trim()) return;
+    contentEl.textContent  = newText;
+    contentEl.style.display = '';
+    editArea.remove();
+    if (state.displayMessages[index]) state.displayMessages[index].content = newText;
+    const role    = state.displayMessages[index]?.role;
+    const apiRole = role==='narrator' ? 'assistant' : 'user';
+    updateApiMessage(index, newText, apiRole);
+    saveState();
+    showToast('Edit saved');
+  }
+
+  async function saveEditAndRegenerate(index, newText, block, editArea, contentEl) {
+    saveEdit(index, newText, block, editArea, contentEl);
+    // Trim everything after this message
+    state.displayMessages = state.displayMessages.slice(0, index + 1);
+    const apiIdx = findApiIndex(index);
+    if (apiIdx !== -1) state.messages = state.messages.slice(0, apiIdx + 1);
+    // Remove DOM blocks after this index
+    const allBlocks = document.querySelectorAll('.story-block');
+    for (let i = allBlocks.length - 1; i > index; i--) allBlocks[i].remove();
+    showToast('Regenerating...');
+    const sendBtn = document.getElementById('send-btn');
+    sendBtn.disabled = true;
+    const typingEl = showTyping();
+    try {
+      await compressHistoryIfNeeded();
+      const result = await callAPI(state.messages);
+      typingEl.remove();
+      state.messages.push({role:'assistant', content:result.text});
+      addDisplayMessage('narrator', result.text);
+      state.totalTokensUsed += (result.inputTokens + result.outputTokens);
+      updateGauges();
+      saveState();
+    } catch(e) {
+      typingEl.remove();
+      addDisplayMessage('narrator', friendlyError(e.message));
+    }
+    sendBtn.disabled = false;
+  }
+
+  function updateApiMessage(displayIndex, newText, apiRole) {
+    let roleCount = 0;
+    for (let i = 0; i < displayIndex; i++) {
+      const r  = state.displayMessages[i]?.role;
+      const ar = r==='narrator' ? 'assistant' : 'user';
+      if (ar === apiRole) roleCount++;
+    }
+    let found = 0;
+    for (let i = 0; i < state.messages.length; i++) {
+      if (state.messages[i].role === apiRole) {
+        if (found === roleCount) { state.messages[i].content = newText; return; }
+        found++;
+      }
+    }
+  }
+
+  function findApiIndex(displayIndex) {
+    const role    = state.displayMessages[displayIndex]?.role;
+    const apiRole = role==='narrator' ? 'assistant' : 'user';
+    let roleCount = 0;
+    for (let i = 0; i < displayIndex; i++) {
+      const r  = state.displayMessages[i]?.role;
+      if ((r==='narrator'?'assistant':'user') === apiRole) roleCount++;
+    }
+    let found = 0;
+    for (let i = 0; i < state.messages.length; i++) {
+      if (state.messages[i].role === apiRole) {
+        if (found === roleCount) return i;
+        found++;
+      }
+    }
+    return -1;
   }
 
   // ─── DISPLAY ──────────────────────────────────────────────────────────────
@@ -498,12 +662,18 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
     const output  = document.getElementById('story-output');
     const welcome = output.querySelector('.story-welcome');
     if (welcome) welcome.remove();
-    const block    = document.createElement('div'); block.className = `story-block ${role}`;
-    const meta     = document.createElement('div'); meta.className  = 'block-meta';
-    meta.textContent = role==='narrator' ? 'Narrator' : (state.narrator.pcName||'You');
-    const contentEl  = document.createElement('div'); contentEl.className = 'block-content';
+    const index    = output.querySelectorAll('.story-block').length;
+    const block    = document.createElement('div');
+    block.className = `story-block ${role}`;
+    const meta     = document.createElement('div');
+    meta.className  = 'block-meta';
+    let metaLabel = role === 'narrator' ? 'Narrator' : role === 'ooc' ? '✦ Author (OOC)' : (state.narrator.pcName||'You');
+    meta.innerHTML = `<span>${esc(metaLabel)}</span><button class="block-edit-btn" onclick="App.editBlock(${index})">edit</button>`;
+    const contentEl  = document.createElement('div');
+    contentEl.className = 'block-content';
     contentEl.textContent = content;
-    block.appendChild(meta); block.appendChild(contentEl);
+    block.appendChild(meta);
+    block.appendChild(contentEl);
     output.appendChild(block);
   }
 
@@ -845,7 +1015,7 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
 
   return {
     init, saveKey, showDemo, switchTab,
-    sendMessage, handleInputKey,
+    sendMessage, handleInputKey, toggleOOC, editBlock,
     addCharacter, editCharacter, saveCharacter, deleteCharacter,
     saveWorld, saveNarrator,
     addEvent, saveEvent, renderEvents,
@@ -858,4 +1028,3 @@ ${toCompress.map(m=>`${m.role.toUpperCase()}: ${typeof m.content==='string'?m.co
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);
-
