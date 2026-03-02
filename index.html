@@ -22,9 +22,18 @@
         <p class="logo-sub">Narrative Intelligence Engine</p>
       </div>
       <div class="setup-form">
-        <label class="field-label">Anthropic API Key</label>
-        <input type="password" id="api-key-input" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
-        <p class="setup-hint">Your key is stored only on this device and never transmitted anywhere except directly to Anthropic's servers.</p>
+        <label class="field-label">AI Provider</label>
+        <select id="setup-provider-select" onchange="App.updateSetupForProvider()"></select>
+        <label class="field-label" style="margin-top:0.5rem">API Key</label>
+        <input type="password" id="setup-key-input" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+        <p class="setup-hint" id="setup-key-hint">Get your key at console.anthropic.com</p>
+        <div id="setup-custom-row" style="display:none;flex-direction:column;gap:0.5rem">
+          <label class="field-label">Endpoint URL</label>
+          <input type="text" id="setup-custom-endpoint" placeholder="http://localhost:11434/v1/chat/completions">
+          <label class="field-label">Model Name</label>
+          <input type="text" id="setup-custom-model" placeholder="e.g. llama3, mistral">
+        </div>
+        <p class="setup-hint" style="margin-top:0.25rem">Your key is stored only on this device and sent only to your chosen provider.</p>
         <button class="btn-primary" onclick="App.saveKey()">Enter the Story</button>
         <button class="btn-ghost" onclick="App.showDemo()">Explore Without Key</button>
       </div>
@@ -377,31 +386,38 @@
       </div>
       <div class="modal-body">
         <div class="form-field">
+          <label class="field-label">AI Provider</label>
+          <select id="settings-provider" onchange="App.updateSettingsForProvider()"></select>
+        </div>
+        <div class="form-field">
           <label class="field-label">API Key</label>
-          <input type="password" id="settings-api-key" placeholder="sk-ant-...">
+          <input type="password" id="settings-api-key" placeholder="your-key">
+          <div class="word-hint" id="settings-key-hint"></div>
         </div>
         <div class="form-field">
           <label class="field-label">Model</label>
-          <select id="settings-model">
-            <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (Recommended)</option>
-            <option value="claude-opus-4-20250514">Claude Opus 4 (Most Capable)</option>
-            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fastest / Cheapest)</option>
-          </select>
+          <select id="settings-model"></select>
         </div>
         <div class="form-field">
-          <label class="field-label">Context Window Size</label>
-          <select id="settings-context">
-            <option value="200000">200k tokens (Full — Claude Sonnet/Opus)</option>
-            <option value="100000">100k tokens (Conservative)</option>
-            <option value="50000">50k tokens (Fast / Cheap)</option>
-          </select>
+          <label class="field-label">Context Window</label>
+          <select id="settings-context"></select>
+        </div>
+        <div id="settings-custom-row" style="display:none">
+          <div class="form-field" style="margin-bottom:0.5rem">
+            <label class="field-label">Custom Endpoint URL</label>
+            <input type="text" id="settings-custom-endpoint" placeholder="http://localhost:11434/v1/chat/completions">
+          </div>
+          <div class="form-field">
+            <label class="field-label">Model Name</label>
+            <input type="text" id="settings-custom-model" placeholder="e.g. llama3">
+          </div>
         </div>
         <div class="form-field">
           <label class="field-label">Campaign Name</label>
           <input type="text" id="settings-campaign" placeholder="Name this campaign">
         </div>
         <div class="settings-danger">
-          <button class="btn-danger" onclick="App.clearKey()">Clear API Key</button>
+          <button class="btn-danger" onclick="App.clearKey()">Clear All Keys</button>
           <button class="btn-danger" onclick="App.resetCampaign()">Reset Campaign</button>
         </div>
       </div>
