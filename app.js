@@ -100,6 +100,22 @@ const App = (() => {
       defaultModel: 'mistral-large-latest',
       defaultContext: 128000,
     },
+    groq: {
+      name: 'Groq (Free Tier Available)',
+      keyPlaceholder: 'gsk_...',
+      keyHint: 'Get your free key at console.groq.com — no payment required to start',
+      baseUrl: 'https://api.groq.com/openai/v1/chat/completions',
+      format: 'openai',
+      models: [
+        { id: 'llama-3.3-70b-versatile',     label: 'Llama 3.3 70B — Recommended' },
+        { id: 'llama-3.1-8b-instant',         label: 'Llama 3.1 8B — Fastest (free tier friendly)' },
+        { id: 'mixtral-8x7b-32768',           label: 'Mixtral 8x7B — Good for long context' },
+        { id: 'gemma2-9b-it',                 label: 'Gemma 2 9B — Google open model' },
+      ],
+      contextLimits: [128000, 32768, 8192],
+      defaultModel: 'llama-3.3-70b-versatile',
+      defaultContext: 128000,
+    },
     custom: {
       name: 'Custom / Ollama (Local)',
       keyPlaceholder: 'optional — leave blank for local Ollama',
