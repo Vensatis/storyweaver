@@ -103,7 +103,7 @@
           <!-- Active NPC chips appear here -->
         </div>
         <div class="input-area">
-          <div class="input-wrap">
+          <div class="input-wrap" id="input-wrap">
             <textarea id="player-input" 
               placeholder="What do you do, say, or observe..." 
               rows="3"
@@ -113,7 +113,10 @@
             </button>
           </div>
           <div class="input-meta">
-            <span class="input-hint">Shift+Enter for new line · Enter to send</span>
+            <div style="display:flex;gap:0.5rem;align-items:center">
+              <button class="ooc-toggle" id="ooc-toggle" onclick="App.toggleOOC()" title="Out of Character — speak as author to direct the story">OOC</button>
+              <span class="input-hint" id="input-hint">Shift+Enter for new line · Enter to send</span>
+            </div>
             <span class="turn-count" id="turn-count">Turn 0</span>
           </div>
         </div>
