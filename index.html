@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="StoryWeaver">
+  <meta name="theme-color" content="#0d0d0f">
+  <title>StoryWeaver</title>
+  <link rel="stylesheet" href="style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Josefin+Sans:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- API KEY SCREEN -->
+  <div id="setup-screen" class="screen active">
+    <div class="setup-inner">
+      <div class="setup-logo">
+        <div class="logo-mark">⟁</div>
+        <h1 class="logo-text">StoryWeaver</h1>
+        <p class="logo-sub">Narrative Intelligence Engine</p>
+      </div>
+      <div class="setup-form">
+        <label class="field-label">Anthropic API Key</label>
+        <input type="password" id="api-key-input" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+        <p class="setup-hint">Your key is stored only on this device and never transmitted anywhere except directly to Anthropic's servers.</p>
+        <button class="btn-primary" onclick="App.saveKey()">Enter the Story</button>
+        <button class="btn-ghost" onclick="App.showDemo()">Explore Without Key</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="main-screen" class="screen">
+
+    <!-- HEADER -->
+    <header class="app-header">
+      <div class="header-left">
+        <span class="header-logo">⟁ StoryWeaver</span>
+      </div>
+      <div class="header-gauges">
+        <div class="gauge-wrap" title="Tokens used this session">
+          <div class="gauge-label">TOKENS</div>
+          <div class="gauge-bar-wrap">
+            <div class="gauge-bar" id="token-bar"></div>
+          </div>
+          <div class="gauge-val" id="token-val">0</div>
+        </div>
+        <div class="gauge-wrap" title="Active context window usage">
+          <div class="gauge-label">CONTEXT</div>
+          <div class="gauge-bar-wrap">
+            <div class="gauge-bar context-bar" id="context-bar"></div>
+          </div>
+          <div class="gauge-val" id="context-val">0%</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <button class="icon-btn" onclick="App.newCampaign()" title="New Campaign">✦</button>
+        <button class="icon-btn" onclick="App.showSettings()" title="Settings">⚙</button>
+      </div>
+    </header>
+
+    <!-- TABS -->
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-tab="play" onclick="App.switchTab('play')">
+        <span class="tab-icon">▶</span><span class="tab-label">Play</span>
+      </button>
+      <button class="tab-btn" data-tab="characters" onclick="App.switchTab('characters')">
+        <span class="tab-icon">◈</span><span class="tab-label">Characters</span>
+      </button>
+      <button class="tab-btn" data-tab="world" onclick="App.switchTab('world')">
+        <span class="tab-icon">◉</span><span class="tab-label">World</span>
+      </button>
+      <button class="tab-btn" data-tab="events" onclick="App.switchTab('events')">
+        <span class="tab-icon">◆</span><span class="tab-label">Events</span>
+      </button>
+      <button class="tab-btn" data-tab="narrator" onclick="App.switchTab('narrator')">
+        <span class="tab-icon">✦</span><span class="tab-label">Narrator</span>
+      </button>
+    </nav>
+
+    <!-- TAB: PLAY -->
+    <div id="tab-play" class="tab-content active">
+      <div class="story-wrap">
+        <div id="story-output" class="story-output">
+          <div class="story-welcome">
+            <div class="welcome-glyph">⟁</div>
+            <h2>Your story awaits.</h2>
+            <p>Describe your world, your character, and where you begin — or simply say what happens first.</p>
+          </div>
+        </div>
+        <div class="scene-chips" id="scene-chips">
+          <!-- Active NPC chips appear here -->
+        </div>
+        <div class="input-area">
+          <div class="input-wrap">
+            <textarea id="player-input" 
+              placeholder="What do you do, say, or observe..." 
+              rows="3"
+              onkeydown="App.handleInputKey(event)"></textarea>
+            <button class="send-btn" onclick="App.sendMessage()" id="send-btn">
+              <span>↑</span>
+            </button>
+          </div>
+          <div class="input-meta">
+            <span class="input-hint">Shift+Enter for new line · Enter to send</span>
+            <span class="turn-count" id="turn-count">Turn 0</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: CHARACTERS -->
+    <div id="tab-characters" class="tab-content">
+      <div class="tab-inner">
+        <div class="tab-toolbar">
+          <h2 class="tab-title">Characters</h2>
+          <button class="btn-small" onclick="App.addCharacter()">+ Add NPC</button>
+        </div>
+        <div class="char-roster" id="char-roster">
+          <div class="empty-state">
+            <p>No characters yet.</p>
+            <p class="empty-sub">Add NPCs to populate your world. Up to 24 named characters supported.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: WORLD -->
+    <div id="tab-world" class="tab-content">
+      <div class="tab-inner">
+        <div class="tab-toolbar">
+          <h2 class="tab-title">World Lore</h2>
+          <button class="btn-small" onclick="App.saveWorld()">Save</button>
+        </div>
+        <div class="world-form">
+          <div class="form-field">
+            <label class="field-label">World Name / Setting</label>
+            <input type="text" id="world-name" placeholder="e.g. The Shattered Reaches, Neo-Tokyo 2187, 1920s Paris...">
+          </div>
+          <div class="form-field">
+            <label class="field-label">World Overview</label>
+            <textarea id="world-overview" rows="5" placeholder="The essential facts of this world — its tone, rules, power structures, and what makes it unique. This is always in context, so keep it under 300 words."></textarea>
+            <div class="word-hint" id="world-overview-count">0 / 300 words recommended</div>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Geography & Factions</label>
+            <textarea id="world-geo" rows="4" placeholder="Key locations, territories, and the factions or groups that control them. Who holds power and why."></textarea>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Rules & Systems</label>
+            <textarea id="world-rules" rows="4" placeholder="Magic systems, technology level, laws of nature that differ from our world. What can and cannot happen here."></textarea>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Tone & Atmosphere</label>
+            <textarea id="world-tone" rows="3" placeholder="The emotional register of this world. Gritty and dangerous? Wondrous and mythic? Paranoid and tense? This shapes every narrative response."></textarea>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Extended Lore (archived — retrieved on demand)</label>
+            <textarea id="world-lore" rows="6" placeholder="Deeper history, myths, legends, factions in detail, anything that enriches the world but doesn't need to be in context constantly."></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: EVENTS -->
+    <div id="tab-events" class="tab-content">
+      <div class="tab-inner">
+        <div class="tab-toolbar">
+          <h2 class="tab-title">Story Events</h2>
+          <button class="btn-small" onclick="App.addEvent()">+ Add Event</button>
+        </div>
+        <div class="events-split">
+          <div class="events-col">
+            <h3 class="col-title">⬡ World Events <span class="col-sub">Pre-seeded into the world</span></h3>
+            <div id="world-events-list" class="event-list">
+              <div class="empty-state"><p>No world events yet.</p><p class="empty-sub">Add events that exist in the world before play begins — wars, disasters, political shifts, prophecies.</p></div>
+            </div>
+            <button class="btn-ghost-small" onclick="App.addEvent('world')">+ Add World Event</button>
+          </div>
+          <div class="events-col">
+            <h3 class="col-title">◆ Story Events <span class="col-sub">Occurred during play</span></h3>
+            <div id="story-events-list" class="event-list">
+              <div class="empty-state"><p>No story events yet.</p><p class="empty-sub">Significant moments from your sessions are logged here automatically.</p></div>
+            </div>
+            <button class="btn-ghost-small" onclick="App.addEvent('story')">+ Add Manually</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: NARRATOR -->
+    <div id="tab-narrator" class="tab-content">
+      <div class="tab-inner">
+        <div class="tab-toolbar">
+          <h2 class="tab-title">Narrator</h2>
+          <button class="btn-small" onclick="App.saveNarrator()">Save</button>
+        </div>
+        <div class="narrator-form">
+          <div class="form-field">
+            <label class="field-label">Narrative Voice</label>
+            <select id="narrator-voice">
+              <option value="second">Second Person — "You step into the room..."</option>
+              <option value="third">Third Person — "She steps into the room..."</option>
+              <option value="first">First Person — "I step into the room..."</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Prose Style</label>
+            <select id="narrator-style">
+              <option value="literary">Literary — Rich, layered, evocative</option>
+              <option value="terse">Terse — Sharp, spare, kinetic</option>
+              <option value="pulp">Pulp — Fast-paced, visceral, plot-driven</option>
+              <option value="lyrical">Lyrical — Poetic, sensory, emotional</option>
+              <option value="grounded">Grounded — Realistic, observational, character-focused</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Pacing</label>
+            <select id="narrator-pacing">
+              <option value="balanced">Balanced — Scene and action in proportion</option>
+              <option value="slow">Deliberate — Dwell in moments, rich detail</option>
+              <option value="fast">Urgent — Keep things moving, lean prose</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Narrative Risk</label>
+            <select id="narrator-risk">
+              <option value="high">High — Embrace conflict, consequence, surprise</option>
+              <option value="medium">Medium — Balanced tension and resolution</option>
+              <option value="low">Low — Prefer resolution and comfort</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Content Level</label>
+            <select id="narrator-content">
+              <option value="general">General — Suitable for all audiences</option>
+              <option value="mature">Mature — Adult themes, implied content</option>
+              <option value="explicit">Explicit — Uncensored (requires compatible model/key)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Custom Narrator Instructions</label>
+            <textarea id="narrator-custom" rows="5" placeholder="Any specific instructions for how your narrator should behave — particular phrases to use or avoid, specific character voices, structural preferences, anything the above options don't cover."></textarea>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Player Character Name</label>
+            <input type="text" id="pc-name" placeholder="The name of the player's character in the story">
+          </div>
+          <div class="form-field">
+            <label class="field-label">Player Character Description</label>
+            <textarea id="pc-desc" rows="4" placeholder="Who is the player character? Background, appearance, personality, skills. This is always in context."></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main-screen -->
+
+  <!-- CHARACTER MODAL -->
+  <div id="char-modal" class="modal-overlay" onclick="App.closeModal(event)">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="modal-title">Add Character</h3>
+        <button class="modal-close" onclick="App.closeCharModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-field">
+          <label class="field-label">Name <span class="badge-core">CORE</span></label>
+          <input type="text" id="char-name" placeholder="Character's primary name">
+        </div>
+        <div class="form-field">
+          <label class="field-label">Archetype <span class="badge-core">CORE</span></label>
+          <input type="text" id="char-archetype" placeholder="e.g. Reluctant guardian, Scheming noble">
+        </div>
+        <div class="form-field">
+          <label class="field-label">Voice Descriptor <span class="badge-core">CORE</span></label>
+          <input type="text" id="char-voice" placeholder="e.g. Clipped, sardonic. Speaks in incomplete sentences.">
+        </div>
+        <div class="form-field">
+          <label class="field-label">Primary Motivation <span class="badge-core">CORE</span></label>
+          <input type="text" id="char-motivation" placeholder="What drives every decision they make">
+        </div>
+        <div class="form-field">
+          <label class="field-label">Core Wound / Secret <span class="badge-core">CORE</span></label>
+          <input type="text" id="char-wound" placeholder="The thing they carry">
+        </div>
+        <div class="form-field">
+          <label class="field-label">Current Disposition Toward Player</label>
+          <select id="char-disposition">
+            <option value="trusting">Trusting / Allied</option>
+            <option value="friendly">Friendly / Warm</option>
+            <option value="neutral" selected>Neutral / Wary</option>
+            <option value="suspicious">Suspicious / Cool</option>
+            <option value="hostile">Hostile / Opposed</option>
+            <option value="unknown">Unknown to Player</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label class="field-label">Current Emotional State <span class="badge-core">CORE</span></label>
+          <input type="text" id="char-state" placeholder="Right now in the story — update after significant scenes">
+        </div>
+        <div class="form-field">
+          <label class="field-label">Active Agenda <span class="badge-core">CORE</span></label>
+          <input type="text" id="char-agenda" placeholder="What they're pursuing independent of the player">
+        </div>
+        <div class="form-row">
+          <div class="form-field half">
+            <label class="field-label">Presence</label>
+            <select id="char-presence">
+              <option value="active">Active Scene</option>
+              <option value="nearby">Nearby</option>
+              <option value="offstage" selected>Offstage</option>
+              <option value="deceased">Deceased</option>
+            </select>
+          </div>
+          <div class="form-field half">
+            <label class="field-label">Canon Source</label>
+            <input type="text" id="char-canon" placeholder="Leave blank if original">
+          </div>
+        </div>
+        <div class="form-field">
+          <label class="field-label">Backstory & Deep Notes <span class="badge-deep">DEEP</span></label>
+          <textarea id="char-backstory" rows="4" placeholder="Formative events, skills, resources. Loaded on demand."></textarea>
+        </div>
+        <div class="form-field">
+          <label class="field-label">Relationships <span class="badge-deep">DEEP</span></label>
+          <textarea id="char-relationships" rows="3" placeholder="One line per relationship: 'Mira — distrusts since the harbor incident, owes her a debt'"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="App.closeCharModal()">Cancel</button>
+        <button class="btn-primary" onclick="App.saveCharacter()">Save Character</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EVENT MODAL -->
+  <div id="event-modal" class="modal-overlay" onclick="App.closeModal(event)">
+    <div class="modal-box modal-small">
+      <div class="modal-header">
+        <h3 id="event-modal-title">Add Event</h3>
+        <button class="modal-close" onclick="App.closeEventModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-field">
+          <label class="field-label">Event Title</label>
+          <input type="text" id="event-title" placeholder="Brief title for this event">
+        </div>
+        <div class="form-field">
+          <label class="field-label">Description</label>
+          <textarea id="event-desc" rows="4" placeholder="What happened? Who was involved? What changed as a result?"></textarea>
+        </div>
+        <div class="form-field">
+          <label class="field-label">Significance</label>
+          <select id="event-sig">
+            <option value="major">Major — World-changing</option>
+            <option value="significant" selected>Significant — Affects key characters</option>
+            <option value="minor">Minor — Local or personal</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="App.closeEventModal()">Cancel</button>
+        <button class="btn-primary" onclick="App.saveEvent()">Save Event</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div id="settings-modal" class="modal-overlay" onclick="App.closeModal(event)">
+    <div class="modal-box modal-small">
+      <div class="modal-header">
+        <h3>Settings</h3>
+        <button class="modal-close" onclick="App.closeSettingsModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-field">
+          <label class="field-label">API Key</label>
+          <input type="password" id="settings-api-key" placeholder="sk-ant-...">
+        </div>
+        <div class="form-field">
+          <label class="field-label">Model</label>
+          <select id="settings-model">
+            <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (Recommended)</option>
+            <option value="claude-opus-4-20250514">Claude Opus 4 (Most Capable)</option>
+            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fastest / Cheapest)</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label class="field-label">Context Window Size</label>
+          <select id="settings-context">
+            <option value="200000">200k tokens (Full — Claude Sonnet/Opus)</option>
+            <option value="100000">100k tokens (Conservative)</option>
+            <option value="50000">50k tokens (Fast / Cheap)</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label class="field-label">Campaign Name</label>
+          <input type="text" id="settings-campaign" placeholder="Name this campaign">
+        </div>
+        <div class="settings-danger">
+          <button class="btn-danger" onclick="App.clearKey()">Clear API Key</button>
+          <button class="btn-danger" onclick="App.resetCampaign()">Reset Campaign</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="App.closeSettingsModal()">Cancel</button>
+        <button class="btn-primary" onclick="App.saveSettings()">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
